@@ -1,18 +1,38 @@
 from lib import Rovio
 import cv2
 import numpy as np
-import winsound, sys, time
-
+import sys, time
+import os
 from skimage import filter, img_as_ubyte
+
+from yolo.frondend import YOLO
+
+# ------------------------------ Configuration Setting ------------------------------------------ #
+config = {
+    "model" : {
+        "architecture":         "Full Yolo",
+        "input_size":           416,
+        "anchors":              [0.57273, 0.677385, 1.87446, 2.06253, 3.33843, 5.47434, 7.88282, 3.52778, 9.77052, 9.16828],
+        "max_box_per_image":    10,
+        "labels":               ["rovio"]
+    }
+}
+
+labels = config['mdoel']['label']
+
+rovio_detector_w_path = os.path.join('rovio_detector_weights', 'rovio_detector_weights.06-0.02.h5')
+# ------------------------------------------------------------------------------------------------ #
 
 
 class rovioControl(object):
-    def __init__(self, url, username, password, port=80):
+    def __init__(self, url, username, password, config, port=80):
     	# Initialize the robot with username,pw, ip
         self.rovio = Rovio(url, username=username, password=password,
                            port=port)
         self.last = None
         self.key = 0
+        self.config = config
+        self.rovio_detector = self.setup_rovio_detector()
 
     def night_vision(self, frame):
     	# Night Vision is convert to grayscale and histogram equalization
@@ -87,7 +107,7 @@ class rovioControl(object):
             	cv2.imshow("Facedetector",frame)
                 cv2.imwrite("face.png", frame)
                 flag = True
-                winsound.PlaySound('%s.wav' % 'humandetected', winsound.SND_FILENAME)
+                # winsound.PlaySound('%s.wav' % 'humandetected', winsound.SND_FILENAME)
 
 
     #########################################################################################
@@ -129,6 +149,18 @@ class rovioControl(object):
         # Return the height of the zone
         return h-y
 
+    def setup_rovio_detector(self):
+        yolo = YOLO(architecture        = config['model']['architecture'],
+                input_size          = config['model']['input_size'],
+                labels              = config['model']['labels'],
+                max_box_per_image   = config['model']['max_box_per_image'],
+                anchors             = config['model']['anchors'])
+
+        print('Loading model {}'.format(rovio_detector_w_path))
+        yolo.load_weights(rovio_detector_w_path)
+
+        return yolo
+
     # MAIN FUNCTION TO BE CALLED
     def main(self):
     	# Whenever initialize, raise head to middle
@@ -143,6 +175,52 @@ class rovioControl(object):
         frame = self.resize(frame)
         frame = cv2.merge([frame, frame, frame])
         frame = self.show_battery(frame)
+
+
+
+
+        # keep rotate right to search for Rovio
+        boxes = self.rovio_detector.predict(frame)
+        if len(boxes) < 1:
+            self.rovio.rotate_right(angle=20, speed=2)
+        else:
+            # Get the nearest one to move to (Biggest Area)
+            max_box_i = 0
+            max_area = 0
+            for index, box in enumerate(boxes):
+                area = (box.w + box.x) * (box.h + box.y)
+                if max_area < area:
+                    max_area = area
+                    max_box_i = index
+
+            x, y, w, h = boxes[index].get_position()
+
+            # get center point of the box
+            xmin = int((box.x - box.w / 2) * frame.shape[1])
+            xmax = int((box.x + box.w / 2) * frame.shape[1])
+            ymin = int((box.y - box.h / 2) * frame.shape[0])
+            ymax = int((box.y + box.h / 2) * frame.shape[0])
+
+            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
+            cv2.putText(frame,
+                        labels[box.get_label()] + ' ' + str(box.get_score()),
+                        (xmin, ymin - 13),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1e-3 * frame.shape[0],
+                        (0, 255, 0), 2)
+
+            # Assume x and y is the center point
+            if x > frame.shape[1] / 2:
+                self.rovio.rotate_right(angle=20, speed=2)
+            else:
+                self.rovio.rotate_left(angle=20, speed=2
+
+
+
+
+
+
+
         #####################################################
         #				Perform Floor floor_finder			#
         #####################################################
@@ -196,6 +274,9 @@ class rovioControl(object):
             self.face_detection()
 
 
+
+
+
 #############################################################################
 #						Main Class and rovioControl							#
 #############################################################################
@@ -205,6 +286,13 @@ if __name__ == "__main__":
     user = 'myname'
     password = "12345"
     app = rovioControl(url, user, password)
+
+
+    # Setup tensorflow
+
+
+
+
 # While Loop to loop the action
 while True:
     app.main()
