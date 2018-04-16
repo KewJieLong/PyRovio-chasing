@@ -52,4 +52,8 @@ ehthumbs.db
 Thumbs.db
 
 
-.idea
+.idea/*
+
+
+# ignore rovio weight cause it is too large
+rovio_detector_weights/*
