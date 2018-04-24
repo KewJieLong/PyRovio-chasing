@@ -21,20 +21,22 @@ config = {
 labels = config['model']['labels']
 
 rovio_detector_w_path = os.path.join('rovio-detector-weights', 'rovio_detector_weights.06-0.02.h5')
-
+winning_threshold = 0.16
 
 # ------------------------------------------------------------------------------------------------ #
 
 
 class rovioControl(object):
-    def __init__(self, url, username, password, config, port=80):
+    def __init__(self, name, url, username, password, rovio_detector, chaser, port=80):
         # Initialize the robot with username,pw, ip
         self.rovio = Rovio(url, username=username, password=password,
                            port=port)
         self.last = None
         self.key = 0
-        self.config = config
-        self.rovio_detector = self.setup_rovio_detector()
+        self.rovio_detector = rovio_detector
+        self.chaser = chaser
+        self.ready = False
+        self.name = name
 
     def night_vision(self, frame):
         # Night Vision is convert to grayscale and histogram equalization
@@ -148,20 +150,12 @@ class rovioControl(object):
         # Return the height of the zone
         return h - y
 
-    def setup_rovio_detector(self):
-        yolo = YOLO(architecture=config['model']['architecture'],
-                    input_size=config['model']['input_size'],
-                    labels=config['model']['labels'],
-                    max_box_per_image=config['model']['max_box_per_image'],
-                    anchors=config['model']['anchors'])
-
-        print('Loading model {}'.format(rovio_detector_w_path))
-        yolo.load_weights(rovio_detector_w_path)
-
-        return yolo
+    def toggle_chaser(self):
+        self.chaser = not self.chaser
 
     # MAIN FUNCTION TO BE CALLED
     def main(self):
+        print(self.name + ' action ' + str(self.chaser))
         # Whenever initialize, raise head to middle
         # self.rovio.head_middle()
 
@@ -181,10 +175,46 @@ class rovioControl(object):
 
 
         # ROVIO detect start here
-        # keep rotate right to search for Rovio
-        boxes = self.rovio_detector.predict(ori_frame)
+        # keep rotate right to search for Rovio'
+
+
+        # Assume x and y is the center point
+        if self.chaser:
+            box = self.detect_rovio(ori_frame)
+            if box is not None:
+                x, y, w, h = box.get_position()
+                print('area for {}'.format(w * h))
+
+                if(x * frame.shape[0] >= 160 and x * frame.shape[0] <= 480):
+                    self.move()
+
+                    if (w * h > winning_threshold):
+                        print('Chaser win')
+                        return True
+
+                elif x * frame.shape[1]> frame.shape[1] / 2:
+                    self.rovio.rotate_right(angle=15, speed=1)
+                else:
+                    self.rovio.rotate_left(angle=15, speed=1)
+            else:
+                self.rovio.rotate_right(angle=15, speed=1)
+
+
+        if not self.chaser:
+            print('RUNNNNN')
+            self.run(rotate_180=False)
+
+
+            #############################################################################
+            #						Main Class and rovioControl							#
+            #############################################################################
+            # TODO: Edit the IP address here
+
+    def detect_rovio(self, frame):
+        boxes = self.rovio_detector.predict(frame)
         if len(boxes) < 1:
             self.rovio.rotate_right(angle=15, speed=1)
+            return None
         else:
             # Get the nearest one to move to (Biggest Area)
             x, y, w, h = 0, 0, 0, 0
@@ -196,7 +226,8 @@ class rovioControl(object):
 
                 area = (box.w + box.x) * (box.h + box.y)
                 print(width / height)
-                if max_area < area and (width/height > 1.1 and width/height < 1.2):
+                print('y = {}'.format(box.y))
+                if max_area < area and (width / height > 1.1 and width / height < 1.2) and (box.y > 0.5 and box.y < 0.7) :
                     max_area = area
                     max_box_i = index
 
@@ -208,94 +239,166 @@ class rovioControl(object):
             ymin = int((box.y - box.h / 2) * frame.shape[0])
             ymax = int((box.y + box.h / 2) * frame.shape[0])
 
-            cv2.rectangle(ori_frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
-            cv2.putText(ori_frame,
+            cv2.rectangle(frame, (xmin, ymin), (xmax, ymax), (0, 255, 0), 3)
+            cv2.putText(frame,
                         labels[box.get_label()] + ' ' + str(box.get_score()),
                         (xmin, ymin - 13),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         1e-3 * frame.shape[0],
                         (0, 255, 0), 2)
 
-            cv2.imshow('detector', ori_frame)
+            cv2.imshow('{} detector'.format(self.name), frame)
 
-            # Assume x and y is the center point
-            if(x * frame.shape[0] >= 213 and x * frame.shape[0]<= 426):
-                self.rovio.forward()
-            elif x * frame.shape[1]> frame.shape[1] / 2:
-                self.rovio.rotate_right(angle=15, speed=1)
-            else:
-                self.rovio.rotate_left(angle=15, speed=1)
+            return boxes[max_box_i]
 
-                #####################################################
-                #				Perform Floor floor_finder			#
-                #####################################################
-                # If safe zone is more than 80 then check for infrared detection
-
-                if self.floor_finder() > 80:
-                    pass
-                    # if(not self.rovio.ir()):
-                    #     self.rovio.api.set_ir(1)
-                    # if (not self.rovio.obstacle()):
-                    #     self.rovio.forward()
-                    #     self.rovio.forward()
-                    #     self.rovio.forward()
-                    #     self.rovio.forward()
-                    #     self.rovio.forward()
-                    #     self.rovio.forward()
-                    # else:
-                    #     self.rovio.rotate_right(angle=20, speed=2)
-                    # Rotate right is safe zone is smaller than 80 pixels
+    def search_rovio(self):
+        while not self.ready:
+            frame = self.rovio.camera.get_frame()
+            box = self.detect_rovio(frame)
+            if box is not None :
+                x, y, w, h = box.get_position()
+                if (x * frame.shape[0] >= 160 and x * frame.shape[0] <= 480):
+                    print('found rovio in center')
+                    self.ready = True
+                    break
+                elif x * frame.shape[1] > frame.shape[1] / 2:
+                    self.rovio.rotate_right(angle=15, speed=1)
                 else:
-                    pass
-                    # self.rovio.rotate_right(angle=20, speed=2)
+                    self.rovio.rotate_left(angle=15, speed=1)
 
-                # If Button Pressed, onAction
-                # Use ASCII for decode
-                self.key = cv2.waitKey(20)
-                if self.key > 0:
-                # print self.key
-                    pass
-                if self.key == 114:  # r
-                    self.rovio.turn_around()
-                elif self.key == 63233 or self.key == 115:  # down or s
-                    self.rovio.backward(speed=7)
-                elif self.key == 63232 or self.key == 119:  # up or w
-                    self.rovio.forward(speed=1)
-                elif self.key == 63234 or self.key == 113:  # left or a
-                    self.rovio.rotate_left(angle=12, speed=5)
-                elif self.key == 63235 or self.key == 101:  # right or d
-                    self.rovio.rotate_right(angle=12, speed=5)
-                elif self.key == 97:  # left or a
-                    self.rovio.left(speed=1)
-                elif self.key == 100:  # right or d
-                    self.rovio.right(speed=1)
-                elif self.key == 44:  # comma
-                    self.rovio.head_down()
-                elif self.key == 46:  # period
-                    self.rovio.head_middle()
-                elif self.key == 47:  # slash
-                    self.rovio.head_up()
-                elif self.key == 32:  # Space Bar, pressed then perform face detection
-                    flag = False
-                # self.rovio.stop()
-                # self.face_detection()
+    def is_rovio_ready(self):
+        return self.ready
 
-                #############################################################################
-                #						Main Class and rovioControl							#
-                #############################################################################
-                # TODO: Edit the IP address here
+    def move(self):
+        #####################################################
+        #				Perform Floor floor_finder			#
+        #####################################################
+        # If safe zone is more than 80 then check for infrared detection
+
+        if self.floor_finder() > 80:
+            if(not self.rovio.ir()):
+                self.rovio.api.set_ir(1)
+            if (not self.rovio.obstacle()):
+                self.rovio.forward()
+                self.rovio.forward()
+                self.rovio.forward()
+                self.rovio.forward()
+                self.rovio.forward()
+                self.rovio.forward()
+            else:
+                self.rovio.rotate_right(angle=20, speed=2)
+            # Rotate right is safe zone is smaller than 80 pixels
+        else:
+            self.rovio.rotate_right(angle=20, speed=2)
+
+        # If Button Pressed, onAction
+        # Use ASCII for decode
+        self.key = cv2.waitKey(20)
+        if self.key > 0:
+            # print self.key
+            pass
+        if self.key == 114:  # r
+            self.rovio.turn_around()
+        elif self.key == 63233 or self.key == 115:  # down or s
+            self.rovio.backward(speed=7)
+        elif self.key == 63232 or self.key == 119:  # up or w
+            self.rovio.forward(speed=1)
+        elif self.key == 63234 or self.key == 113:  # left or a
+            self.rovio.rotate_left(angle=12, speed=5)
+        elif self.key == 63235 or self.key == 101:  # right or d
+            self.rovio.rotate_right(angle=12, speed=5)
+        elif self.key == 97:  # left or a
+            self.rovio.left(speed=1)
+        elif self.key == 100:  # right or d
+            self.rovio.right(speed=1)
+        elif self.key == 44:  # comma
+            self.rovio.head_down()
+        elif self.key == 46:  # period
+            self.rovio.head_middle()
+        elif self.key == 47:  # slash
+            self.rovio.head_up()
+        elif self.key == 32:  # Space Bar, pressed then perform face detection
+            flag = False
+        # self.rovio.stop()
+        # self.face_detection()
+
+    def run(self, rotate_180):
+        if rotate_180:
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=20, speed=2)
+
+        # self.rovio.forward()
+        self.move()
+
+
+def setup_rovio_detector(config):
+    yolo = YOLO(architecture=config['model']['architecture'],
+                input_size=config['model']['input_size'],
+                labels=config['model']['labels'],
+                max_box_per_image=config['model']['max_box_per_image'],
+                anchors=config['model']['anchors'])
+
+    print('Loading model {}'.format(rovio_detector_w_path))
+    yolo.load_weights(rovio_detector_w_path)
+
+    return yolo
+
+
 if __name__ == "__main__":
-    url = '192.168.43.2'
-    user = 'rovio'
-    password = "azwan9669"
-    app = rovioControl(url, user, password, config)
+    rovio_detector = setup_rovio_detector(config)
 
 
+    url1 = '192.168.43.2'
+    user1 = 'rovio'
+    password1 = "azwan9669"
+
+    url2 = '192.168.43.3'
+    user2 = 'rovio'
+    password2 = 'azwan9669'
+
+    app1 = rovioControl('one', url1, user1, password1, rovio_detector, chaser=False)
+    app2 = rovioControl('two', url2, user2, password2, rovio_detector, chaser=True)
+
+while not app1.is_rovio_ready() and not app2.is_rovio_ready():
+    app1.search_rovio()
+    app2.search_rovio()
+
+app1.run(True)
+
+print('both rovio is ready!!!!!!')
+
+for i in range(3):
+    print(i)
+    time.sleep(1)
 
 
 while True:
-    app.main()
+    if(app1.main()):
+        app1.toggle_chaser()
+        app2.toggle_chaser()
+        print('rovio 1 win')
+    if(app2.main()):
+        app1.toggle_chaser()
+        app2.toggle_chaser()
+        print('rovio 2 win')
     # If press esc, then head down and stop the loop
-    if app.key == 27:
-        app.rovio.head_down()
-        break
+    # if app1.key == 27:
+    #     app1.rovio.head_down()
+    #     break
+    #
+    # if app2.key == 27:
+    #     app2.
