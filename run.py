@@ -4,6 +4,7 @@ import numpy as np
 import sys, time
 import os
 from skimage import img_as_ubyte
+import threading
 
 from yolo.frondend import YOLO
 
@@ -26,8 +27,16 @@ winning_threshold = 0.16
 # ------------------------------------------------------------------------------------------------ #
 
 
+rovio = {
+    'rovio1_ready': False,
+    'rovio2_ready': False,
+}
+
+
+
+
 class rovioControl(object):
-    def __init__(self, name, url, username, password, rovio_detector, chaser, port=80):
+    def __init__(self, name, url, username, password, rovio_detector, rovio_ready, chaser, port=80):
         # Initialize the robot with username,pw, ip
         self.rovio = Rovio(url, username=username, password=password,
                            port=port)
@@ -35,7 +44,7 @@ class rovioControl(object):
         self.key = 0
         self.rovio_detector = rovio_detector
         self.chaser = chaser
-        self.ready = False
+        self.rovio_ready = rovio_ready
         self.name = name
 
     def night_vision(self, frame):
@@ -146,12 +155,27 @@ class rovioControl(object):
                     y = j
                     break
             cv2.rectangle(frame, (0, y), (w, h), (245, 252, 0), 2)
-        cv2.imshow("Zone", frame)
+        # cv2.imshow("Zone", frame)
         # Return the height of the zone
         return h - y
 
     def toggle_chaser(self):
         self.chaser = not self.chaser
+
+    def start(self):
+        self.search_rovio()
+        while rovio['rovio1_ready']:
+            print('both rovio is ready!!!!!!')
+
+            for i in range(3):
+                print(i)
+                time.sleep(1)
+
+            while self.main():
+                pass
+
+            break
+
 
     # MAIN FUNCTION TO BE CALLED
     def main(self):
@@ -161,7 +185,7 @@ class rovioControl(object):
 
         # Get frame and show original capture frame
         frame = self.rovio.camera.get_frame()
-        cv2.imshow("Original", frame)
+        # cv2.imshow("Original", frame)
 
         if not isinstance(frame, np.ndarray):
             return
@@ -179,18 +203,20 @@ class rovioControl(object):
 
 
         # Assume x and y is the center point
+
+        box = self.detect_rovio(ori_frame)
         if self.chaser:
-            box = self.detect_rovio(ori_frame)
             if box is not None:
                 x, y, w, h = box.get_position()
                 print('area for {}'.format(w * h))
 
                 if(x * frame.shape[0] >= 160 and x * frame.shape[0] <= 480):
                     self.move()
-
                     if (w * h > winning_threshold):
                         print('Chaser win')
-                        return True
+                        key = '{}_ready'.format(self.name)
+                        self.rovio_ready[key] = False
+                        return False
 
                 elif x * frame.shape[1]> frame.shape[1] / 2:
                     self.rovio.rotate_right(angle=15, speed=1)
@@ -201,14 +227,23 @@ class rovioControl(object):
 
 
         if not self.chaser:
-            print('RUNNNNN')
-            self.run(rotate_180=False)
+            if box is None:
+                print('RUNNNNN')
+                self.run(rotate_180=False)
+            else:
+                print('SAW ROVIO, turn 180 and RUNNN')
+                self.run(rotate_180=True)
+
+
+
 
 
             #############################################################################
             #						Main Class and rovioControl							#
             #############################################################################
             # TODO: Edit the IP address here
+
+        return True
 
     def detect_rovio(self, frame):
         boxes = self.rovio_detector.predict(frame)
@@ -252,14 +287,17 @@ class rovioControl(object):
             return boxes[max_box_i]
 
     def search_rovio(self):
-        while not self.ready:
+        key = '{}_ready'.format(self.name)
+        while not self.rovio_ready[key]:
             frame = self.rovio.camera.get_frame()
             box = self.detect_rovio(frame)
             if box is not None :
                 x, y, w, h = box.get_position()
                 if (x * frame.shape[0] >= 160 and x * frame.shape[0] <= 480):
                     print('found rovio in center')
-                    self.ready = True
+                    key = '{}_ready'.format(self.name)
+                    self.rovio_ready[key] = True
+                    self.toggle_chaser()
                     break
                 elif x * frame.shape[1] > frame.shape[1] / 2:
                     self.rovio.rotate_right(angle=15, speed=1)
@@ -267,7 +305,8 @@ class rovioControl(object):
                     self.rovio.rotate_left(angle=15, speed=1)
 
     def is_rovio_ready(self):
-        return self.ready
+        key = '{}_ready'.format(self.name)
+        return self.rovio_ready[key]
 
     def move(self):
         #####################################################
@@ -275,21 +314,32 @@ class rovioControl(object):
         #####################################################
         # If safe zone is more than 80 then check for infrared detection
 
-        if self.floor_finder() > 80:
-            if(not self.rovio.ir()):
-                self.rovio.api.set_ir(1)
-            if (not self.rovio.obstacle()):
-                self.rovio.forward()
-                self.rovio.forward()
-                self.rovio.forward()
-                self.rovio.forward()
-                self.rovio.forward()
-                self.rovio.forward()
-            else:
-                self.rovio.rotate_right(angle=20, speed=2)
-            # Rotate right is safe zone is smaller than 80 pixels
+        if (not self.rovio.ir()):
+            self.rovio.api.set_ir(1)
+        if (not self.rovio.obstacle()):
+            self.rovio.forward()
+            self.rovio.forward()
+            self.rovio.forward()
+            # self.rovio.forward()
+            # self.rovio.forward()
+            # self.rovio.forward()
         else:
             self.rovio.rotate_right(angle=20, speed=2)
+        # if self.floor_finder() > 80:
+        #     if(not self.rovio.ir()):
+        #         self.rovio.api.set_ir(1)
+        #     if (not self.rovio.obstacle()):
+        #         self.rovio.forward()
+        #         self.rovio.forward()
+        #         self.rovio.forward()
+        #         # self.rovio.forward()
+        #         # self.rovio.forward()
+        #         # self.rovio.forward()
+        #     else:
+        #         self.rovio.rotate_right(angle=20, speed=2)
+        #     # Rotate right is safe zone is smaller than 80 pixels
+        # else:
+        #     self.rovio.rotate_right(angle=20, speed=2)
 
         # If Button Pressed, onAction
         # Use ASCII for decode
@@ -322,27 +372,31 @@ class rovioControl(object):
         # self.rovio.stop()
         # self.face_detection()
 
-    def run(self, rotate_180):
+    def run(self, rotate_180=False):
         if rotate_180:
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
-            self.rovio.rotate_left(angle=20, speed=2)
+            self.rovio.rotate_left(angle=180, speed=2)
 
         # self.rovio.forward()
         self.move()
+
+    def reverse_backward(self):
+        self.rovio.rotate_left(angle=180, speed=2)
+        for i in range(10):
+            self.move()
+
+    def backward(self):
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+        self.rovio.backward(speed=2)
+
 
 
 def setup_rovio_detector(config):
@@ -370,31 +424,50 @@ if __name__ == "__main__":
     user2 = 'rovio'
     password2 = 'azwan9669'
 
-    app1 = rovioControl('one', url1, user1, password1, rovio_detector, chaser=False)
-    app2 = rovioControl('two', url2, user2, password2, rovio_detector, chaser=True)
+    app1 = rovioControl('rovio1', url1, user1, password1, rovio_detector, rovio, chaser=True)
+    app2 = rovioControl('rovio2', url2, user2, password2, rovio_detector, rovio, chaser=False)
 
-while not app1.is_rovio_ready() and not app2.is_rovio_ready():
-    app1.search_rovio()
-    app2.search_rovio()
 
-app1.run(True)
 
-print('both rovio is ready!!!!!!')
 
-for i in range(3):
-    print(i)
-    time.sleep(1)
+
+
+
 
 
 while True:
-    if(app1.main()):
-        app1.toggle_chaser()
-        app2.toggle_chaser()
-        print('rovio 1 win')
-    if(app2.main()):
-        app1.toggle_chaser()
-        app2.toggle_chaser()
-        print('rovio 2 win')
+    print('START!!!')
+    while rovio['rovio1_ready'] is False and rovio['rovio2_ready'] is False:
+        app1.search_rovio()
+        app2.search_rovio()
+
+    app1.backward()
+    app2.backward()
+    print('both rovio ready!!!!')
+    for i in range(3):
+        print(i)
+        time.sleep(1)
+
+
+    while app1.main() and app2.main():
+        pass
+
+    # t1 = threading.Thread(target=app1.start)
+    # t1.start()
+    # t2 = threading.Thread(target=app2.start())
+    # t1.join()
+    app1.toggle_chaser()
+    app2.toggle_chaser()
+
+
+    print('END')
+
+
+
+
+
+
+
     # If press esc, then head down and stop the loop
     # if app1.key == 27:
     #     app1.rovio.head_down()
