@@ -56,4 +56,4 @@ Thumbs.db
 
 
 # ignore rovio weight cause it is too large
-rovio_detector_weights/*
+rovio-detector-weights/*

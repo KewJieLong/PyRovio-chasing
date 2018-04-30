@@ -5,6 +5,7 @@ import sys, time
 import os
 from skimage import img_as_ubyte
 import threading
+from node import Node
 
 from yolo.frondend import YOLO
 
@@ -21,8 +22,11 @@ config = {
 
 labels = config['model']['labels']
 
-rovio_detector_w_path = os.path.join('rovio-detector-weights', 'rovio_detector_weights.06-0.02.h5')
+rovio_detector_w_path = os.path.join('rovio-detector-weights', 'rovio_detector_weights.01-0.03.h5')
 winning_threshold = 0.16
+patient_steps_no_forward = 3
+steps_reset_safe_zone = 4
+num_safe_zone = 8
 
 # ------------------------------------------------------------------------------------------------ #
 
@@ -46,6 +50,20 @@ class rovioControl(object):
         self.chaser = chaser
         self.rovio_ready = rovio_ready
         self.name = name
+        self.steps_no_forward = 0
+        self.head = None
+        self.init_safe_zone_ring()
+        self.steps_moving = 0
+
+    def init_safe_zone_ring(self):
+        self.head = Node(True)
+        current = self.head
+        for i in range(num_safe_zone - 1):
+            new_node = Node(True)
+            current.tail = new_node
+            current = new_node
+
+        current.tail = self.head
 
     def night_vision(self, frame):
         # Night Vision is convert to grayscale and histogram equalization
@@ -176,6 +194,26 @@ class rovioControl(object):
 
             break
 
+    def search_safe_zone(self):
+        current = self.head
+        count = 0
+        while current.element is not True:
+            print('Searching for safe zone ~~~ ')
+            self.rovio.rotate_right(angle=45, speed=1)
+            self.rovio.rotate_right(angle=45, speed=1)
+            self.rovio.rotate_right(angle=45, speed=1)
+            self.rovio.rotate_right(angle=45, speed=1)
+            current = current.tail
+            count += 1
+
+            if count > num_safe_zone:
+                print('HELP !!!!! i am trapped')
+                break
+
+        self.head = current
+        return True
+
+
 
     # MAIN FUNCTION TO BE CALLED
     def main(self):
@@ -220,11 +258,26 @@ class rovioControl(object):
 
                 elif x * frame.shape[1]> frame.shape[1] / 2:
                     self.rovio.rotate_right(angle=15, speed=1)
+                    self.steps_no_forward += 1
                 else:
                     self.rovio.rotate_left(angle=15, speed=1)
-            else:
-                self.rovio.rotate_right(angle=15, speed=1)
+                    self.steps_no_forward += 1
 
+                if self.steps_no_forward > patient_steps_no_forward:
+                    self.rovio.forward()
+                    self.rovio.forward()
+                    self.rovio.forward()
+                    self.rovio.forward()
+                    self.steps_no_forward = 0
+
+            else:
+                if self.steps_no_forward < 10:
+                    self.rovio.rotate_right(angle=15, speed=1)
+                else:
+                    self.rovio.forward()
+                    self.rovio.forward()
+                    self.rovio.forward()
+                    self.steps_no_forward = 0
 
         if not self.chaser:
             if box is None:
@@ -232,6 +285,7 @@ class rovioControl(object):
                 self.run(rotate_180=False)
             else:
                 print('SAW ROVIO, turn 180 and RUNNN')
+                self.head.element = False
                 self.run(rotate_180=True)
 
 
@@ -245,10 +299,11 @@ class rovioControl(object):
 
         return True
 
-    def detect_rovio(self, frame):
+    def detect_rovio(self, frame, search_rovio=False):
         boxes = self.rovio_detector.predict(frame)
         if len(boxes) < 1:
-            self.rovio.rotate_right(angle=15, speed=1)
+            if search_rovio or self.chaser:
+                self.rovio.rotate_right(angle=15, speed=1)
             return None
         else:
             # Get the nearest one to move to (Biggest Area)
@@ -290,7 +345,7 @@ class rovioControl(object):
         key = '{}_ready'.format(self.name)
         while not self.rovio_ready[key]:
             frame = self.rovio.camera.get_frame()
-            box = self.detect_rovio(frame)
+            box = self.detect_rovio(frame, search_rovio=True)
             if box is not None :
                 x, y, w, h = box.get_position()
                 if (x * frame.shape[0] >= 160 and x * frame.shape[0] <= 480):
@@ -314,17 +369,24 @@ class rovioControl(object):
         #####################################################
         # If safe zone is more than 80 then check for infrared detection
 
-        if (not self.rovio.ir()):
-            self.rovio.api.set_ir(1)
-        if (not self.rovio.obstacle()):
-            self.rovio.forward()
-            self.rovio.forward()
-            self.rovio.forward()
-            # self.rovio.forward()
-            # self.rovio.forward()
-            # self.rovio.forward()
-        else:
-            self.rovio.rotate_right(angle=20, speed=2)
+        while self.search_safe_zone():
+            if not self.rovio.ir():
+                self.rovio.api.set_ir(1)
+            if not self.rovio.obstacle():
+                self.steps_no_forward = 0
+                self.rovio.forward()
+                self.rovio.forward()
+                self.rovio.forward()
+                self.steps_moving += 1
+
+                if self.steps_moving > steps_reset_safe_zone:
+                    self.init_safe_zone_ring()
+                    self.steps_moving = 0
+                break
+            else:
+                print('detect Obstracle')
+                self.head.element = False
+
         # if self.floor_finder() > 80:
         #     if(not self.rovio.ir()):
         #         self.rovio.api.set_ir(1)
@@ -343,44 +405,50 @@ class rovioControl(object):
 
         # If Button Pressed, onAction
         # Use ASCII for decode
-        self.key = cv2.waitKey(20)
-        if self.key > 0:
-            # print self.key
-            pass
-        if self.key == 114:  # r
-            self.rovio.turn_around()
-        elif self.key == 63233 or self.key == 115:  # down or s
-            self.rovio.backward(speed=7)
-        elif self.key == 63232 or self.key == 119:  # up or w
-            self.rovio.forward(speed=1)
-        elif self.key == 63234 or self.key == 113:  # left or a
-            self.rovio.rotate_left(angle=12, speed=5)
-        elif self.key == 63235 or self.key == 101:  # right or d
-            self.rovio.rotate_right(angle=12, speed=5)
-        elif self.key == 97:  # left or a
-            self.rovio.left(speed=1)
-        elif self.key == 100:  # right or d
-            self.rovio.right(speed=1)
-        elif self.key == 44:  # comma
-            self.rovio.head_down()
-        elif self.key == 46:  # period
-            self.rovio.head_middle()
-        elif self.key == 47:  # slash
-            self.rovio.head_up()
-        elif self.key == 32:  # Space Bar, pressed then perform face detection
-            flag = False
+        # self.key = cv2.waitKey(20)
+        # if self.key > 0:
+        #     # print self.key
+        #     pass
+        # if self.key == 114:  # r
+        #     self.rovio.turn_around()
+        # elif self.key == 63233 or self.key == 115:  # down or s
+        #     self.rovio.backward(speed=7)
+        # elif self.key == 63232 or self.key == 119:  # up or w
+        #     self.rovio.forward(speed=1)
+        # elif self.key == 63234 or self.key == 113:  # left or a
+        #     self.rovio.rotate_left(angle=12, speed=5)
+        # elif self.key == 63235 or self.key == 101:  # right or d
+        #     self.rovio.rotate_right(angle=12, speed=5)
+        # elif self.key == 97:  # left or a
+        #     self.rovio.left(speed=1)
+        # elif self.key == 44:  # comma
+        #     self.rovio.head_down()
+        # elif self.key == 46:  # period
+        #     self.rovio.head_middle()
+        # elif self.key == 47:  # slash
+        #     self.rovio.head_up()
+        # elif self.key == 32:  # Space Bar, pressed then perform face detection
+        #     flag = False
         # self.rovio.stop()
         # self.face_detection()
 
     def run(self, rotate_180=False):
         if rotate_180:
-            self.rovio.rotate_left(angle=180, speed=2)
+            self.turn_180()
 
         # self.rovio.forward()
         self.move()
 
+    def turn_180(self):
+        self.rovio.rotate_right(angle=20, speed=2)
+        self.rovio.rotate_right(angle=20, speed=2)
+        self.rovio.rotate_right(angle=20, speed=2)
+        self.rovio.rotate_right(angle=20, speed=2)
+        self.rovio.rotate_right(angle=20, speed=2)
+
+
     def reverse_backward(self):
-        self.rovio.rotate_left(angle=180, speed=2)
+        self.turn_180()
         for i in range(10):
             self.move()
 
