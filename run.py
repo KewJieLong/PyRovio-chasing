@@ -444,7 +444,7 @@ class rovioControl(object):
         self.rovio.rotate_right(angle=20, speed=2)
         self.rovio.rotate_right(angle=20, speed=2)
         self.rovio.rotate_right(angle=20, speed=2)
-        self.rovio.rotate_right(angle=20, speed=2)
+
 
 
     def reverse_backward(self):
