@@ -57,3 +57,5 @@ Thumbs.db
 
 # ignore rovio weight cause it is too large
 rovio_detector_weights/*
+
+full_yolo_backend.h5
