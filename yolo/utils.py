@@ -32,7 +32,7 @@ class BoundBox:
 		return self.score
 
 	def get_position(self):
-		return x, y, w, h
+		return self.x, self.y, self.w, self.h
 
 
 class WeightReader:

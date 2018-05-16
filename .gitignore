@@ -59,3 +59,4 @@ Thumbs.db
 rovio_detector_weights/*
 
 full_yolo_backend.h5
+rovio-detector-weights/*
