@@ -3,7 +3,7 @@ import cv2
 import numpy as np
 import sys, time
 import os
-from skimage import filter, img_as_ubyte
+from skimage import img_as_ubyte
 
 from yolo.frondend import YOLO
 
@@ -18,7 +18,7 @@ config = {
     }
 }
 
-labels = config['mdoel']['label']
+labels = config['model']['labels']
 
 rovio_detector_w_path = os.path.join('rovio_detector_weights', 'rovio_detector_weights.06-0.02.h5')
 # ------------------------------------------------------------------------------------------------ #
@@ -213,7 +213,7 @@ class rovioControl(object):
             if x > frame.shape[1] / 2:
                 self.rovio.rotate_right(angle=20, speed=2)
             else:
-                self.rovio.rotate_left(angle=20, speed=2
+                self.rovio.rotate_left(angle=20, speed=2)
 
 
 
@@ -225,7 +225,6 @@ class rovioControl(object):
         #				Perform Floor floor_finder			#
         #####################################################
         # If safe zone is more than 80 then check for infrared detection
-        # TODO: IMPROVE　ＴＨＥ　ＶＡＬＵＥ	
         if self.floor_finder() > 80:
             if (not self.rovio.ir()):
                 self.rovio.api.set_ir(1)
@@ -285,7 +284,7 @@ if __name__ == "__main__":
     url = '192.168.173.173'
     user = 'myname'
     password = "12345"
-    app = rovioControl(url, user, password)
+    app = rovioControl(url, user, password, config)
 
 
     # Setup tensorflow
